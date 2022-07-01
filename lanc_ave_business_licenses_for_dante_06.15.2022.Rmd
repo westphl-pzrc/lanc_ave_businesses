@@ -1,0 +1,355 @@
+---
+title: "Lancaster Avenue Business Licenses"
+author: "Nissim Lebovits"
+date: "6/15/2022"
+output: 
+  html_document:
+    toc: true
+---
+
+# Summary
+This document creates a dataset of businesses with Lancaster Avenue Commercial Corridor addresses. It combines business license and zoning data from the City of Philadelphia's Department of Licenses and Inspections and Department of Planning and Development respectively with SNAP data from the United States Department of Agriculture. 
+
+These data have many possible uses. They can be filtered or analyzed by qualitative attributes or spatially. Additional data can easily be added to this dataset if other analysis is desired.
+
+*This is an RMarkdown document. It combines text explanations with in-line code so that the process of creating the dataset can be easily understood and replicated in the future.*
+
+
+# Steps
+To create this dataset, you will need to complete the following steps. Each is laid out in more detail in the sections below.
+
+## 1. Step Up Workspace
+First we need to set up our workspace. For this project, we only need two things: 1) to call the R packages that we'll need for everything below, and 2) to specify the working directory--the place on our computer where all of our files will go. 
+
+If you run this analysis yourself, the library will *not* change. However, you *will* have to set the filepath for the working directory so that it's appropriate for your own computer.
+```{r setup, include = TRUE, echo = TRUE, message = FALSE, warning = FALSE, error = FALSE}
+library(tidyverse, quietly = T) #This is a standard package in R. You'll need it for almost anything you do in R.
+library(sf, quietly = T) #This package allows you to work with spatial data. Most of our data are spatial, so this will be important.
+library(mapview, quietly = T) #This package allows us to map things quickly and easily.
+library(tidygeocoder, quietly = T) #This package will help us geocode data for which we don't have latitude/longitude coordinates. This will allow us to make those data spatial like all the others.
+library(lubridate, quietly = T) #This is to calculate license durations later on.
+library(downloadthis, quietly = T) #For embedding downloadable .csv's later in the document
+require("knitr") #This and the following line of code will set out working directory. Mine is a folder where I keep all of my business data work. 
+#IMPORTANT: MAKE SURE YOU SET THIS PROPERLY. If you don't, none of your data will load. This should be one of the first places you look when you troubleshoot your code.
+opts_knit$set(root.dir = "C:/Users/Nissim.Lebovits/OneDrive - City of Philadelphia/Desktop/Transition Documents/Data/R Scripts and Datasets/WEO")
+```
+
+## 2. Download and Clean Business License Data
+Next, we'll import our business license data and clean it. Before importing your data, you'll want to download it as a .csv (a spreadsheet, basically) from the following OpenData Philly link: https://www.opendataphilly.org/dataset/licenses-and-inspections-business-licenses
+
+There are other filetypes we could use for this download, but the .csv does job. It contains the data that we need and, in contrast to a shapefile (more on this later), doesn't take up too much memory. So, download the .csv file and make sure that it's stored in the same folder as you've indicated in your working directory (see step 1).
+
+Once we've downloaded it, we'll import the .csv into R and clean it. This means making sure that the data include only what we're looking for (so, for this step, getting rid of rental licenses), that there are no errors in the data, and that it's formatted in a way that will be most useful for us. 
+
+```{r business licenses import, include = TRUE, echo = TRUE, message = FALSE, warning = FALSE, error = FALSE}
+all_phl_licenses = read.csv("./Business Licenses/business_licenses.csv") #Here we're importing the file using its filepath. The "./" is a stand-in for the filepath indicated in the working directory from step 1. Then, we add the subfolder in WEO where the file is located ("Business Licenses"), a forward slash, the file name ("business_licenses"), and the file extension (".csv").
+
+phl_non_rental_licenses = all_phl_licenses |> #Now we'll subset all_phl_licenses to create a dataset containing only non-rental licenses.
+                              filter(licensestatus == "Active", #Filtering for only active licenses
+                                     !is.na(lng), #We need to remove missing data in the coordiate columns.
+                                     !is.na(lat), #Otherwise, we can't covert this to spatial data.
+                                     licensetype != "Rental") |> #Filtering out rental data.
+                              dplyr::select(-c(the_geom, the_geom_webmercator, #Here, we're removing any columns of data that we don't need.
+                                               unit_type, unit_num,
+                                               numberofunits, owneroccupied,
+                                               geocode_x, geocode_y, council_district))
+
+#Now we're going to clean the address column so that it's easier to match to other datasets.
+#We'll do this by converting everything to lowercase letters, converting full common words to standard abbreviations,
+#and removing punctuation.
+
+phl_non_rental_licenses$address = phl_non_rental_licenses$address |>
+                                        tolower()|>
+                                        str_replace_all("street", "st") |>
+                                        str_replace_all("avenue", "ave") |>
+                                        str_replace_all("  ", " ") |>
+                                        str_remove_all("[[:punct:]]")
+```
+
+## 3. Filter for Lancaster Avenue Businesses
+Now we're going to filter for only businesses with Lancaster Avenue Addresses between the 3400 and 4800 blocks. We're doing this based on the character strings of the addresses rather than spatially, so there is a chance that this can be improved. Some addresses without frontage actually on Lancaster Avenue (e.g., on Brown or Aspen) won't be included this way, so we'll have to figure out how to improve this.
+```{r lancaster avenue clean, include = TRUE, echo = TRUE, message = FALSE, warning = FALSE, error = FALSE}
+#This step is easy: we simply filter for anything with "lancaster" in its address column,
+lanc_ave_non_rental_licenses = phl_non_rental_licenses |>
+                                  filter(grepl("lancaster", address)) |>
+                                  mutate(block = substr(address, 1, 2)) #We're also adding a "block" column to indicate what block an address falls on.
+
+lanc_ave_non_rental_licenses$block = as.numeric(lanc_ave_non_rental_licenses$block) #For filtering, we need this column to be of a numeric datatype
+
+lanc_ave_non_rental_licenses = lanc_ave_non_rental_licenses |> #Now we can simply filter for all address that are at or above the 34th block and at or below the 48th.
+                                  filter(block >= 34 &
+                                         block <= 48)
+
+#Finally, we'll convert this to spatial data. This will allow us to map it, join it to other spatial data,
+#and so forth. 
+lanc_ave_non_rental_licenses_sf = st_as_sf(lanc_ave_non_rental_licenses, #specify which dataset we're making spatial
+                                      coords = c("lng", "lat"), #specify which columns in the dataset have our coordinates
+                                      crs = st_crs("EPSG:4326")) #specify the coordinate reference system of the spatial data. We will set ALL our spatial data to EPSG:4326 so that they all match.
+
+mapview(lanc_ave_non_rental_licenses_sf) #quickly map the data to confirm that they are correct!
+```
+
+## 4. Collapse Business Licenses to Single Addresses
+Now we need to collapse all of the business licenses to single addresses.
+This looks very complicated, but it isn't. Here's what's happening:
+First, we're grouping everything according to OPA account numbers. 
+Even if a business has multiple business licenses, it will only have one OPA account number.
+Next, we'll create a column that will combine all the business licenses registered to a single OPA account number.
+We'll also add a column that indicates how long a given business has had a license.
+Finally, we'll select for only the columns containing data that we care about.
+```{r address collapse, include = TRUE, echo = TRUE, message = FALSE, warning = FALSE, error = FALSE}
+lanc_ave_non_rental_licenses_sf = lanc_ave_non_rental_licenses_sf |>
+                              group_by(opa_account_num) |> #Group by OPA number
+                                mutate(all_licenses = paste(licensetype, collapse = " | "), #Combine all business licenses into a single column
+                                          license_duration = if (is.na(expirationdate) | expirationdate == "" | expirationdate == " ") { #this looks more complicated than it is. Basically, all we're doing is saying that if no expiration date is listed, then count the amount of time between the start of the license and today. If there is an expiration date, count the time between the start of the license and the expiraton date.
+                                            as.duration(interval(initialissuedate, today()))
+                                          } else {
+                                            as.duration(interval(initialissuedate, expirationdate))
+                                          }) |>
+                                dplyr::select(business_name, legalname, address, zip, censustract, opa_account_num, #select for only the columns that we want
+                                              initialissuedate, expirationdate, all_licenses, license_duration, posse_jobid)
+```
+
+## 5. Import and Clean SNAP Data
+We'll import SNAP data that we've downloaded from the USDA here: https://www.fns.usda.gov/snap/retailer/data. You'll want to click on "Download currently authorized SNAP retailers". Once we've downloaded it, we'll read it into R and then do some cleaning. That includes:
+  1) formatting the address column and cleaning the data in i so it's compatible with our business license dataset
+  2) renaming columns so that they will be clearer when we join it with the business license dataset
+  3) filtering for active licenses only
+  4) combining all the historic SNAP data at each address
+```{r snap import, include = TRUE, echo = TRUE, message = FALSE, warning = FALSE, error = FALSE}
+#Import our SNAP data and filter for only sites in Philadelphia
+phl_snap_points = read.csv("C:/Users/Nissim.Lebovits/OneDrive - City of Philadelphia/Desktop/Transition Documents/Data/R Scripts and Datasets/SNAP/SNAP_Data.csv") |>
+  filter(State == "PA",
+         City == "Philadelphia") 
+
+#Make sure that we have an address column in the SNAP dataset that is formatted the same way as the addresses in the business license column
+phl_snap_points = phl_snap_points |>
+  mutate(full_address = tolower(paste(phl_snap_points$Street.Number, phl_snap_points$Street.Name, sep = " ")))
+
+phl_snap_points$full_address = phl_snap_points$full_address |>
+                                  tolower() |>
+                                  str_replace_all("street", "st") |>
+                                  str_replace_all("avenue", "ave") |>
+                                  str_replace_all("  ", " ") |>
+                                  str_remove_all("[[:punct:]]")
+
+#Now we'll rename our SNAP columns so that they won't be confusing when we join them to the business license dataset
+phl_snap_points = phl_snap_points |>
+                     rename(snap_business_name = Store.Name,
+                     snap_end_date = End.Date,
+                     snap_address = full_address)
+
+#Before combining all SNAP data at each address into one row, we need to make it clear that sites without an end date are still active
+phl_snap_points$snap_end_date[phl_snap_points$snap_end_date == " "] = "active"
+
+#Now we can collapse multiple rows at the same address into one row.
+#We'll do this by creating two new columns: one that summarizes all the businesses at an address that ever accepted SNAP,
+#and one that summarizes the expiration dates for SNAP registration at a given address.
+phl_snap_points = phl_snap_points |>
+  group_by(snap_address) |>
+  summarize(historic_snap_names = paste(snap_business_name, collapse = " | "),
+            historic_snap_dates = paste(snap_end_date, collapse = " | "))
+```
+
+## 6. Combine Business License and SNAP Data
+We can now combine the Lancaster Avenue business license and SNAP data to create one dataset. We can simply join the two using their address columns. Then, we can create some new columns based on the combined dataset:
+  1) a snap_status column will tell us if the site accepts, used to accept, or has never accepted SNAP
+  2) a business_status column will tell us whether the business is open, closed, or possibly an error
+
+We'll also clean the dataset further to allow us to geocode any sites without lat/long coordinates. This will allow us to map the data correctly to confirm that everything looks the way it should.
+```{r BLs and SNAP join, include = TRUE, echo = TRUE, message = FALSE, warning = FALSE, error = FALSE}
+lanc_ave_nrls_and_snap = left_join(lanc_ave_non_rental_licenses_sf, phl_snap_points, by = c("address" = "snap_address"))
+
+lanc_ave_nrls_and_snap$snap_status = case_when(
+  is.na(lanc_ave_nrls_and_snap$historic_snap_dates) ~ "no snap ever",
+  str_detect(lanc_ave_nrls_and_snap$historic_snap_dates, "active") ~ "active snap",
+  TRUE ~ "inactive snap"
+)
+
+lanc_ave_nrls_and_snap$business_status = case_when(
+  is.na(lanc_ave_nrls_and_snap$business_name) & lanc_ave_nrls_and_snap$snap_status == "inactive snap" ~ "closed",
+  is.na(lanc_ave_nrls_and_snap$business_name) & lanc_ave_nrls_and_snap$snap_status == "active snap" ~ "mismatch?",
+  TRUE ~ "open"
+)
+
+lanc_ave_nrls_and_snap$state = "PA"
+lanc_ave_nrls_and_snap$city = "Philadelphia"
+
+##########
+#NOTE: In the event that there are any SNAP sites that do NOT match a business license, you'll need to geocode them.
+#You can use the script below to do so.
+#However, in this specific case there are none, so we will skip this step.
+
+#still need to geocode any snap sites with no business license attached to them
+#for_geocode = lanc_ave_nrls_and_snap[is.na(lanc_ave_nrls_and_snap$business_name), ]
+
+#for_geocode = geocode(for_geocode,
+#               street = "address",
+#              city = "city",
+#              state = "state")
+
+#for_geocode = for_geocode |>
+#                dplyr::select(-geometry) |>
+#                st_as_sf(coords = c("long", "lat"), crs = st_crs("EPSG:4326"))
+
+#lanc_ave_nrls_and_snap = rbind(lanc_ave_nrls_and_snap[!is.na(lanc_ave_nrls_and_snap$business_name), ], for_geocode)
+
+#########
+
+mapview(lanc_ave_nrls_and_snap, zcol = "snap_status", legend = T)
+```
+
+## 7. Add Zoning Data
+In this step, we'll add zoning data from the Office of Property Assessment. This can be downloaded here: https://www.opendataphilly.org/dataset/zoning-base-districts. 
+
+You'll want to download the data as a shapefile, *not* as a .csv. Shapefiles are a way of storing spatial data. They are large, but they will make it easier for us to work with spatial data. 
+
+Be mindful that it might take a little while for the shapefile to download. When it does download, it will do so as a .zip. When you see it in your list of downloads, you'll have to unzip it. To do this, if you are on a PC, select the file. Because it's a .zip, a new tab called "compressed file tools" should pop up with the option to "extract all". Click on this. When it asks you where you want to extract the file to, select the same folder as the working directory that you indicated in step 1 (so, for me, this would be the "WEO" folder).
+
+Once we've downloaded the data, we're going to do a very simple step called a spatial join. Basically, it matches things that are in the exact same geographic place. If two things overlap, they're matched. If they don't, they won't be matched. In this case, every single point from our Lancaster Avenue businesses dataset will be joined to a zoning layer, so we'll be able to see the zoning code for every business.
+```{r zoning join, include = TRUE, echo = TRUE, message = FALSE, warning = FALSE, error = FALSE}
+#guide to philadelphia zoning: https://www.phila.gov/media/20200213115058/NEW-ZONING-GUIDE_2020.pdf
+#Here, we'll read in the shapefile with the zoning data. 
+zbds = read_sf("C:/Users/Nissim.Lebovits/OneDrive - City of Philadelphia/Desktop/Transition Documents/Data/R Scripts and Datasets/General Boundaries/Shapefiles/phl_zoningbasedistricts",
+        "Zoning_BaseDistricts",
+        stringsAsFactors = FALSE) |>
+  st_transform(crs = st_crs("EPSG:4326")) #Make sure that the coordinate reference system is set to EPSG:4326!
+
+lanc_ave_nrls_and_snap_by_zoning = st_join(lanc_ave_nrls_and_snap, zbds) #Now we'll just join the businesses to the zoning data
+
+mapview(lanc_ave_nrls_and_snap_by_zoning, zcol = "CODE", legend = T) #And map!
+
+
+possible_home_businesses = lanc_ave_nrls_and_snap_by_zoning |>
+                              filter(CODE %in% c("RM1", "RM2", "RM4", "RSA3", "RSA5", "RTA1") &
+                                      all_licenses != "Vacant Residential Property / Lot")
+
+mapview(possible_home_businesses, zcol = "CODE", legend = T)
+```
+
+## 8. Save and Embed Full Business Licenses Dataset
+Here, we'll do two things: 1) save the full Lancaster Avenue  dataset as a .csv file on our own desktop, and 2) pass the dataset through a function that will allow people to download it from the Markdown document so that we can also share it with others.
+```{r dataset downloads}
+#First, we'll save the full Lancaster Avenue dataset as a .csv file.
+#We'll first convert it to a non-spatial dataset just to make it easier to download.
+lanc_ave_nrls_and_snap_by_zoning_non_spatial = lanc_ave_nrls_and_snap_by_zoning |>
+                                                  as.data.frame() |>
+                                                  dplyr::select(-geometry)
+
+write.csv(lanc_ave_nrls_and_snap_by_zoning_non_spatial,
+          "Full Lancaster Avenue Non-Rental Businesses.csv")
+
+#Now we'll also pass it through a function that will allow people viewing the HTML document to download it easily.
+  download_this(lanc_ave_nrls_and_snap_by_zoning_non_spatial,
+    output_name = "Full Lancaster Avenue Non-Rental Businesses",
+    output_extension = ".xlsx",
+    button_label = "Download Lancaster Avenue Non-Rental Businesses Data",
+    button_type = "warning",
+    has_icon = TRUE,
+    icon = "fa fa-save")
+```
+
+## 9. Create Additional Dataset with Rental Licenses
+Coming back to the question of rental licenses, we're going to return to the original PHL businesses licenses dataset. Instead of filtering rental licenses *out*, we'll now 1) create a dataset that consists *only* of rental licenses and then 2) join it to Lancaster Avenue businesses.
+```{r rental licenses}
+#We'll repeat the same process from step 2, but this time filtering only for rental licenses 
+phl_rental_licenses = all_phl_licenses |> #Now we'll subset all_phl_licenses to create a dataset containing only non-rental licenses.
+                              filter(licensestatus == "Active", #Filtering for only active licenses
+                                     !is.na(lng), #We need to remove missing data in the coordiate columns.
+                                     !is.na(lat), #Otherwise, we can't covert this to spatial data.
+                                     licensetype == "Rental") |> #Filtering for only rental data.
+                              dplyr::select(-c(the_geom, the_geom_webmercator, #Here, we're removing any columns of data that we don't need.
+                                               unit_type, unit_num,
+                                               numberofunits, owneroccupied,
+                                               geocode_x, geocode_y, council_district))
+
+#Convert to a spatial object like before
+phl_rental_licenses_sf = st_as_sf(phl_rental_licenses, #specify which dataset we're making spatial
+                                      coords = c("lng", "lat"), #specify which columns in the dataset have our coordinates
+                                      crs = st_crs("EPSG:4326")) #specify the coordinate reference system of the spatial data. We will set ALL our spatial data to EPSG:4326 so that they all match.
+
+
+
+#The rentals dataset is prohibitively large. If we simply repeated the same steps as for non-rental licenses, it would take too long to process. Instead, we'll make it smaller by applying a spatial filter first. We'll filter out all businesses that are more than a mile from the center of Lancaster Avenue.
+
+#The first step is to define the center of Lancaster Avenue. The address halfway between 48th and 34th is 41st and Lancaster. 
+#We can create a dataframe like so:
+#First, define columns and values
+street = "4100 Lancaster Ave"
+city = "Philadelphia"
+state = "PA"
+
+#Then, combine columns into a dataframe
+lanc_ave_center = data.frame(street, 
+                             city, 
+                             state)
+
+#Geocode dataframe
+lanc_ave_center =  geocode(lanc_ave_center,
+                            street = "street",
+                            city = "city",
+                            state = "state")
+
+#Convert to spatial object
+lanc_ave_center = st_as_sf(lanc_ave_center, 
+                             coords = c("long", "lat"), 
+                             crs = st_crs("EPSG:4326"))
+
+#mapview(lanc_ave_center)
+
+#For simplicity's sake, we're going to APPROXIMATE a buffer here. The coordinate reference system seems to be set to meters,
+#so we'll go with a radius of 1,609 meters, or roughly a mile.
+
+lanc_ave_center_buff = st_buffer(lanc_ave_center, dist = 1609)
+
+#If you want to confirm that this is correct, you can check with mapview.
+#mapview(lanc_ave_center_buff)
+
+phl_rentals_near_lanc_ave = phl_rental_licenses_sf[lanc_ave_center_buff, ]
+
+#mapview(phl_rentals_near_lanc_ave)
+
+#Combine all business licenses into a single column
+phl_rentals_near_lanc_ave = phl_rentals_near_lanc_ave |>
+                                group_by(opa_account_num) |> #Group by OPA number
+                                mutate(all_rental_licenses = paste(licensetype, collapse = " | ")) |>
+                                dplyr::select(all_rental_licenses)
+                              
+
+lanc_ave_business_w_rentals = st_join(lanc_ave_nrls_and_snap_by_zoning, 
+                                  phl_rentals_near_lanc_ave)
+
+lanc_ave_business_w_rentals$has_rental = case_when(
+  is.na(lanc_ave_business_w_rentals$all_rental_licenses) ~ "true",
+  TRUE ~ "false"
+)
+
+mapview(lanc_ave_business_w_rentals, zcol = "has_rental", legend = T)
+```
+
+## 10. Save and Embed Business + Rental Licenses Dataset
+Again, we can 1) save the full dataset as a .csv, and 2) allow it to be downloaded from the Markdown document.
+```{r rental dataset downloads}
+#First, we'll save the full rental dataset as a .csv file.
+#We'll first convert it to a non-spatial dataset just to make it easier to download.
+lanc_ave_business_w_rentals_non_spatial = lanc_ave_business_w_rentals |>
+                                                  as.data.frame() |>
+                                                  dplyr::select(-geometry)
+
+write.csv(lanc_ave_business_w_rentals_non_spatial,
+          "Full Lancaster Avenue Businesses With Rentals.csv")
+
+#Now we'll also pass it through a function that will allow people viewing the HTML document to download it easily.
+  download_this(lanc_ave_business_w_rentals_non_spatial,
+    output_name = "Full Lancaster Avenue Businesses With Rentals",
+    output_extension = ".xlsx",
+    button_label = "Download Lancaster Avenue Businesses With Rentals Data",
+    button_type = "warning",
+    has_icon = TRUE,
+    icon = "fa fa-save")
+```
+
+
+
+
+
